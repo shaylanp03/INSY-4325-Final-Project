@@ -1,0 +1,32 @@
+/* Professional Dashboard Styling */
+.main {
+    background-color: #f4f7f9;
+}
+
+[data-testid="stMetricValue"] {
+    font-size: 28px;
+    font-weight: 700;
+    color: #1e3a8a;
+}
+
+.stButton>button {
+    background-color: #ff4b4b;
+    color: white;
+    border: none;
+    padding: 10px 24px;
+    border-radius: 8px;
+    transition: 0.3s;
+}
+
+.stButton>button:hover {
+    background-color: #d32f2f;
+    border: none;
+}
+
+/* Custom cards for the dashboard */
+div.css-1r6slb0.e1tzgeaf2 {
+    background-color: white;
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+}
