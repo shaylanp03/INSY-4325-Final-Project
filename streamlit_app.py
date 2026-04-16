@@ -11,6 +11,7 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+import html
 import warnings
 import os
 import time
@@ -166,6 +167,8 @@ PLOTLY_LAYOUT = dict(
     margin=dict(l=40, r=20, t=40, b=40),
 )
 
+CSV_PATH = "600K_US_Housing_Properties.csv"
+
 # ─── Session State ────────────────────────────────────────────────────────────
 for key, val in {
     "df_raw": None,
@@ -174,6 +177,7 @@ for key, val in {
     "model_metrics": {},
     "deployed_model": None,
     "deployed_model_name": None,
+    "deployed_feat_cols": [],        # FIX: was missing, caused KeyError on Predictions page
     "predictions_history": [],
     "chat_history": [],
     "cleaning_done": False,
@@ -181,6 +185,13 @@ for key, val in {
 }.items():
     if key not in st.session_state:
         st.session_state[key] = val
+
+# ─── Helper: get active dataframe safely ─────────────────────────────────────
+def get_active_df():
+    """FIX: replaces broken `df_clean or df_raw` pattern on DataFrames."""
+    if st.session_state.cleaning_done and st.session_state.df_clean is not None:
+        return st.session_state.df_clean
+    return st.session_state.df_raw
 
 # ─── Helper: Load Data ────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
@@ -238,7 +249,6 @@ def prepare_features(df):
 def get_bot_response(user_msg, df, metrics):
     msg = user_msg.lower()
 
-    # Stats
     if any(w in msg for w in ["average price", "avg price", "mean price"]):
         if df is not None:
             avg = df["price"].mean()
@@ -274,26 +284,40 @@ def get_bot_response(user_msg, df, metrics):
             m = metrics.get("Gradient Boosting", {})
             r2 = m.get("r2", "N/A")
             rmse = m.get("rmse", "N/A")
-            return f"🏆 **Gradient Boosting** is our best model with R² = **{r2:.3f}** and RMSE = **${rmse:,.0f}**. It uses sequential ensemble learning to minimize prediction errors."
+            r2_str = f"{r2:.3f}" if isinstance(r2, float) else r2
+            rmse_str = f"${rmse:,.0f}" if isinstance(rmse, float) else rmse
+            return f"🏆 **Gradient Boosting** is our best model with R² = **{r2_str}** and RMSE = **{rmse_str}**. It uses sequential ensemble learning to minimize prediction errors."
         return "Train the models first to see performance metrics."
 
     if any(w in msg for w in ["random forest", "rf"]):
         if metrics:
             m = metrics.get("Random Forest", {})
-            return f"🌲 **Random Forest** uses {100} decision trees in parallel. R² = **{m.get('r2', 'N/A'):.3f}**, RMSE = **${m.get('rmse', 'N/A'):,.0f}**."
+            r2 = m.get("r2", "N/A")
+            rmse = m.get("rmse", "N/A")
+            r2_str = f"{r2:.3f}" if isinstance(r2, float) else r2
+            rmse_str = f"${rmse:,.0f}" if isinstance(rmse, float) else rmse
+            return f"🌲 **Random Forest** uses 100 decision trees in parallel. R² = **{r2_str}**, RMSE = **{rmse_str}**."
         return "Please train models first."
 
     if any(w in msg for w in ["linear regression", "linear"]):
         if metrics:
             m = metrics.get("Linear Regression", {})
-            return f"📈 **Linear Regression** is the simplest model. R² = **{m.get('r2', 'N/A'):.3f}**, RMSE = **${m.get('rmse', 'N/A'):,.0f}**."
+            r2 = m.get("r2", "N/A")
+            rmse = m.get("rmse", "N/A")
+            r2_str = f"{r2:.3f}" if isinstance(r2, float) else r2
+            rmse_str = f"${rmse:,.0f}" if isinstance(rmse, float) else rmse
+            return f"📈 **Linear Regression** is the simplest model. R² = **{r2_str}**, RMSE = **{rmse_str}**."
         return "Please train models first."
 
     if any(w in msg for w in ["r2", "r-squared", "accuracy", "performance"]):
         if metrics:
             lines = ["📊 **Model Performance Summary:**\n"]
             for name, m in metrics.items():
-                lines.append(f"• **{name}**: R² = {m.get('r2', 0):.3f}, RMSE = ${m.get('rmse', 0):,.0f}")
+                r2 = m.get("r2", 0)
+                rmse = m.get("rmse", 0)
+                r2_str = f"{r2:.3f}" if isinstance(r2, float) else str(r2)
+                rmse_str = f"${rmse:,.0f}" if isinstance(rmse, float) else str(rmse)
+                lines.append(f"• **{name}**: R² = {r2_str}, RMSE = {rmse_str}")
             return "\n".join(lines)
         return "Please train the models first via the Model Training page."
 
@@ -468,16 +492,15 @@ elif page == "📤 Data Upload":
     col1, col2 = st.columns([1, 3])
     with col1:
         if st.button("📊 Use Demo Dataset (600K rows)"):
-            csv_path = "600K_US_Housing_Properties.csv"
-            if os.path.exists(csv_path):
+            if os.path.exists(CSV_PATH):
                 with st.spinner("Sampling dataset (this may take a moment)…"):
-                    df = load_and_sample(csv_path, n=2000)
+                    df = load_and_sample(CSV_PATH, n=2000)
                     st.session_state.df_raw = df
                     st.session_state.cleaning_done = False
                     st.session_state.training_done = False
                 st.success(f"✅ Loaded {len(df):,} sampled rows from 600K dataset")
             else:
-                st.error("CSV file not found. Please upload it manually.")
+                st.error("CSV file not found. Please upload it manually above.")
 
     if st.session_state.df_raw is not None:
         df = st.session_state.df_raw
@@ -579,7 +602,6 @@ elif page == "🧹 Data Cleaning":
 
     col1, col2 = st.columns(2)
     with col1:
-        # Missing values by column
         miss_by_col = plot_df[["bedroom_number","bathroom_number","living_space","year_build"]].isnull().sum()
         fig = px.bar(x=miss_by_col.index, y=miss_by_col.values,
                      title="Missing Values by Column",
@@ -632,7 +654,7 @@ elif page == "🤖 Model Training":
     st.markdown("<div class='section-title'>Model Training</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-subtitle'>Train and evaluate 3 different machine learning algorithms</div>", unsafe_allow_html=True)
 
-    df_use = st.session_state.df_clean if st.session_state.cleaning_done else st.session_state.df_raw
+    df_use = get_active_df()  # FIX: use helper instead of `or` on DataFrame
     if df_use is None:
         st.warning("⚠️ Please upload data first.")
         st.stop()
@@ -649,7 +671,6 @@ elif page == "🤖 Model Training":
 
     st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Model cards
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown("""<div class='feature-card'>
@@ -701,10 +722,10 @@ elif page == "🤖 Model Training":
             elapsed = time.time() - t0
             preds = model.predict(X_test)
             r2 = r2_score(y_test, preds)
-            rmse = np.sqrt(mean_squared_error(y_test, preds))
-            mae = mean_absolute_error(y_test, preds)
+            rmse = float(np.sqrt(mean_squared_error(y_test, preds)))
+            mae = float(mean_absolute_error(y_test, preds))
             trained[name] = model
-            metrics[name] = {"r2": r2, "rmse": rmse, "mae": mae, "time": elapsed, "feat_cols": feat_cols}
+            metrics[name] = {"r2": float(r2), "rmse": rmse, "mae": mae, "time": elapsed, "feat_cols": feat_cols}
             progress.progress((i + 1) / 3)
 
         st.session_state.models = trained
@@ -714,7 +735,6 @@ elif page == "🤖 Model Training":
         progress.empty()
         st.success("✅ All models trained successfully!")
 
-        # Show results table
         rows = []
         for name, m in metrics.items():
             rows.append({"Model": name, "R² Score": f"{m['r2']:.3f}",
@@ -745,7 +765,6 @@ elif page == "📊 Model Comparison":
         <span style='color:#a0aec0; font-size:0.85rem;'>Recommended for production deployment based on overall performance metrics.</span>
     </div>""", unsafe_allow_html=True)
 
-    # Table
     st.subheader("Performance Metrics Comparison")
     ranks = sorted(metrics.keys(), key=lambda k: metrics[k]["r2"], reverse=True)
     rank_badges = ["<span class='rank-1'>🥇 Best</span>", "<span class='rank-2'>🥈 #2</span>", "<span class='rank-3'>🥉 #3</span>"]
@@ -841,8 +860,7 @@ elif page == "🔮 Predictions":
         waterfront = st.selectbox("Waterfront", ["No", "Yes"])
 
     if st.button("🏠 Predict Price", use_container_width=True):
-        # Build feature vector matching training
-        df_use = st.session_state.df_clean if st.session_state.cleaning_done else st.session_state.df_raw
+        df_use = get_active_df()  # FIX: use helper instead of `or` on DataFrame
         df_prep, le_state, le_type = prepare_features(df_use)
         try:
             state_enc = le_state.transform([state])[0]
@@ -858,7 +876,7 @@ elif page == "🔮 Predictions":
             "living_space": sqft, "state_enc": state_enc,
             "property_type_enc": type_enc, "year_build": yr_built
         }
-        feat_cols = st.session_state.deployed_feat_cols
+        feat_cols = st.session_state.deployed_feat_cols  # FIX: now initialized in session state
         X_pred = np.array([[feat_dict.get(c, 0) for c in feat_cols]])
         price = model.predict(X_pred)[0]
 
@@ -877,7 +895,6 @@ elif page == "🔮 Predictions":
             </div>
         </div>""", unsafe_allow_html=True)
 
-        # Save to history
         st.session_state.predictions_history.append({
             "label": f"{beds} bed, {baths} bath | {sqft:,} sqft",
             "price": price,
@@ -899,17 +916,15 @@ elif page == "🗺 Geography Map":
     st.markdown("<div class='section-title'>Geography Map</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-subtitle'>Explore property locations across the United States</div>", unsafe_allow_html=True)
 
-    csv_path = "600K_US_Housing_Properties.csv"
     df_raw = st.session_state.df_raw
 
-    # Filters
     c1, c2, c3 = st.columns(3)
     with c1:
         min_price = st.number_input("Min Price ($)", 0, 5_000_000, 0, step=50000)
     with c2:
         max_price = st.number_input("Max Price ($)", 0, 10_000_000, 2_000_000, step=50000)
     with c3:
-        prop_filter = st.multiselect("Property Types", 
+        prop_filter = st.multiselect("Property Types",
             ["SINGLE_FAMILY", "CONDO", "MULTI_FAMILY", "TOWNHOUSE", "LOT"],
             default=["SINGLE_FAMILY", "CONDO"])
 
@@ -918,18 +933,21 @@ elif page == "🗺 Geography Map":
         return load_map_sample(path, n)
 
     with st.spinner("Loading map data..."):
-        if os.path.exists(csv_path):
-            map_df = get_map_data(csv_path, 500)
+        if os.path.exists(CSV_PATH):
+            map_df = get_map_data(CSV_PATH, 500)
         elif df_raw is not None:
+            # FIX: safe column access — check existence before converting
             map_df = df_raw.copy()
-            map_df["latitude"] = pd.to_numeric(map_df.get("latitude", pd.Series()), errors="coerce")
-            map_df["longitude"] = pd.to_numeric(map_df.get("longitude", pd.Series()), errors="coerce")
+            for coord_col in ["latitude", "longitude"]:
+                if coord_col in map_df.columns:
+                    map_df[coord_col] = pd.to_numeric(map_df[coord_col], errors="coerce")
+                else:
+                    map_df[coord_col] = np.nan
             map_df = map_df.dropna(subset=["latitude", "longitude"])
         else:
             st.warning("Please upload the dataset or ensure the CSV is in the app directory.")
             st.stop()
 
-    # Apply filters
     map_df["price"] = pd.to_numeric(map_df["price"], errors="coerce")
     filtered = map_df[(map_df["price"] >= min_price) & (map_df["price"] <= max_price)]
     if prop_filter and "property_type" in filtered.columns:
@@ -941,7 +959,6 @@ elif page == "🗺 Geography Map":
         st.warning("No properties match the current filters.")
         st.stop()
 
-    # Build Folium map
     m = folium.Map(
         location=[39.5, -98.35], zoom_start=4,
         tiles="CartoDB dark_matter"
@@ -969,7 +986,7 @@ elif page == "🗺 Geography Map":
             <hr style='margin:4px 0;'/>
             🛏 {beds} beds &nbsp; 🚿 {baths} baths<br/>
             📐 {sqft} sqft &nbsp; 🏘 {ptype}<br/>
-            {"<a href='" + url + "' target='_blank'>View Listing ↗</a>" if url else ""}
+            {"<a href='" + str(url) + "' target='_blank'>View Listing ↗</a>" if url and str(url) != "nan" else ""}
         </div>
         """
         folium.CircleMarker(
@@ -985,7 +1002,6 @@ elif page == "🗺 Geography Map":
 
     st_folium(m, width=None, height=500, returned_objects=[])
 
-    # Legend
     st.markdown("""
     <div style='display:flex; gap:20px; margin-top:8px; font-size:0.85rem;'>
         <span><span style='color:#4ade80;'>●</span> &lt;$200K</span>
@@ -995,7 +1011,6 @@ elif page == "🗺 Geography Map":
     </div>
     """, unsafe_allow_html=True)
 
-    # State breakdown
     if "state" in filtered.columns:
         st.markdown("---")
         c1, c2 = st.columns(2)
@@ -1021,25 +1036,24 @@ elif page == "💬 AI Chatbot":
     st.markdown("<div class='section-title'>AI Real Estate Assistant</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-subtitle'>Ask questions about the dataset, models, and market trends</div>", unsafe_allow_html=True)
 
-    # Init welcome message
     if not st.session_state.chat_history:
         st.session_state.chat_history = [{
             "role": "bot",
             "content": "👋 Hi! I'm your AI real estate assistant. I can answer questions about prices, models, locations, and market trends. What would you like to know?"
         }]
 
-    # Chat display
+    # FIX: escape user messages to prevent HTML injection breaking the chat layout
     chat_html = "<div class='chat-container'>"
     for msg in st.session_state.chat_history:
         if msg["role"] == "user":
-            chat_html += f"<div class='chat-user'>{msg['content']}</div>"
+            safe_content = html.escape(msg["content"])
+            chat_html += f"<div class='chat-user'>{safe_content}</div>"
         else:
             content = msg["content"].replace("\n", "<br/>")
             chat_html += f"<div class='chat-bot'>{content}</div>"
     chat_html += "</div>"
     st.markdown(chat_html, unsafe_allow_html=True)
 
-    # Quick prompts
     st.markdown("<br/>", unsafe_allow_html=True)
     st.markdown("**💡 Quick questions:**")
     cols = st.columns(4)
@@ -1052,12 +1066,11 @@ elif page == "💬 AI Chatbot":
     for i, q in enumerate(quick):
         if cols[i].button(q, key=f"quick_{i}"):
             st.session_state.chat_history.append({"role": "user", "content": q})
-            df = st.session_state.df_clean or st.session_state.df_raw
+            df = get_active_df()  # FIX: use helper
             resp = get_bot_response(q, df, st.session_state.model_metrics)
             st.session_state.chat_history.append({"role": "bot", "content": resp})
             st.rerun()
 
-    # Input
     with st.form("chat_form", clear_on_submit=True):
         c1, c2 = st.columns([5, 1])
         with c1:
@@ -1067,7 +1080,7 @@ elif page == "💬 AI Chatbot":
 
     if submitted and user_input.strip():
         st.session_state.chat_history.append({"role": "user", "content": user_input})
-        df = st.session_state.df_clean or st.session_state.df_raw
+        df = get_active_df()  # FIX: use helper
         resp = get_bot_response(user_input, df, st.session_state.model_metrics)
         st.session_state.chat_history.append({"role": "bot", "content": resp})
         st.rerun()
@@ -1087,7 +1100,7 @@ elif page == "📈 Dashboard":
     st.markdown("<div class='section-title'>Real Estate Trends Dashboard</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-subtitle'>Comprehensive analytics and market insights</div>", unsafe_allow_html=True)
 
-    df = st.session_state.df_clean if st.session_state.cleaning_done else st.session_state.df_raw
+    df = get_active_df()  # FIX: use helper instead of `or` on DataFrame
     if df is None:
         st.warning("⚠️ Please upload data first.")
         st.stop()
@@ -1101,7 +1114,7 @@ elif page == "📈 Dashboard":
     metrics_data = [
         ("Avg Price", f"${avg_price:,.0f}", "+5.2%", True, "$"),
         ("Total Listings", f"{total:,}", "+12.8%", True, "🏘"),
-        ("Avg Days on Market", "32 days", "-8.5%", False, "📅"),
+        ("Avg Days on Market", "32 days", "-8.5%", False, "📅"),  # note: illustrative, not from data
         ("Price per Sqft", f"${ppsqft:,.0f}", "+3.1%", True, "📐"),
     ]
     for col, (label, val, delta, pos, icon) in zip([c1, c2, c3, c4], metrics_data):
@@ -1149,16 +1162,15 @@ elif page == "📈 Dashboard":
             fig3.update_layout(**PLOTLY_LAYOUT, title_font_color="#e2e8f0")
             st.plotly_chart(fig3, use_container_width=True)
     with col4:
-        if "postcode" in df.columns or "state" in df.columns:
-            grp_col = "state" if "state" in df.columns else "postcode"
-            top_zips = df.groupby(grp_col)["price"].median().nlargest(5)
-            fig4 = px.bar(x=top_zips.values, y=top_zips.index.astype(str),
+        grp_col = "state" if "state" in df.columns else ("postcode" if "postcode" in df.columns else None)
+        if grp_col:
+            top_grp = df.groupby(grp_col)["price"].median().nlargest(5)
+            fig4 = px.bar(x=top_grp.values, y=top_grp.index.astype(str),
                           orientation="h", title=f"Top 5 {grp_col.title()}s by Price",
                           color_discrete_sequence=["#a78bfa"])
             fig4.update_layout(**PLOTLY_LAYOUT, title_font_color="#e2e8f0")
             st.plotly_chart(fig4, use_container_width=True)
 
-    # Market Insights
     st.markdown("---")
     st.subheader("Market Insights")
     c1, c2, c3 = st.columns(3)
